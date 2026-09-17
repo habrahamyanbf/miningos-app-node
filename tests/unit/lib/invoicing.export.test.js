@@ -51,7 +51,7 @@ async function runExport (type, params, ctxOpts) {
 }
 
 test('invoicing exports are registered as reporting exports', async (t) => {
-  for (const type of ['invoicing-hourly-hashes', 'invoicing-daily-hashes', 'invoice-breakdown']) {
+  for (const type of ['invoicing-hourly-hashes', 'invoicing-daily-hashes', 'invoicing-monthly-hashes', 'invoice-breakdown']) {
     t.ok(EXPORT_TYPES.includes(type), `${type} is an accepted export type`)
     t.alike(getExportType(type).perms, ['reporting:r'], `${type} is gated on reporting`)
   }
@@ -129,6 +129,50 @@ test('invoicing-daily-hashes - hourly buckets roll up into the requested timezon
 test('invoicing-daily-hashes - a day the pool never reported delivers null, not zero', async (t) => {
   const { out } = await runExport(
     'invoicing-daily-hashes',
+    { start: START, end: START + DAY_MS, timezone: 'UTC', format: 'json' },
+    { buckets: 24, interval: HOUR_MS, poolHashrateHs: null }
+  )
+  const row = JSON.parse(out).hashes[0]
+
+  t.is(row.hashesDeliveredEh, null, 'no pool samples is missing data, not lost hashes')
+  t.is(row.avgPoolHashratePhs, null)
+  t.is(row.avgMinerHashratePhs, 100, 'miner telemetry still reports')
+  t.is(row.pctOfNominal, null, 'no pool samples means no delivered share either')
+  t.pass()
+})
+
+test('invoicing-monthly-hashes - one row per UTC month when the export is asked for UTC', async (t) => {
+  const { filename, out } = await runExport(
+    'invoicing-monthly-hashes',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'UTC', format: 'csv' },
+    { buckets: 48, interval: HOUR_MS }
+  )
+  const lines = out.split('\n')
+
+  t.ok(filename.startsWith('invoicing_monthly_hashes_'), 'filename names the export')
+  t.is(lines[0], 'year,month,hashesDeliveredEh,pctOfNominal,avgMinerHashratePhs,avgPoolHashratePhs')
+  t.is(lines[1], '"2026","August","17107.2","79.2","100","99"', 'pool 9.9e10 MH/s x 48 x 3600 / 1e12 = 17107.2 EH')
+  t.is(lines.length, 2, 'header plus the single month the range covers')
+  t.pass()
+})
+
+test('invoicing-monthly-hashes - hourly buckets roll up into the requested timezone months', async (t) => {
+  const { out } = await runExport(
+    'invoicing-monthly-hashes',
+    { start: START, end: START + 2 * DAY_MS, timezone: 'Etc/GMT+3', format: 'csv' },
+    { buckets: 48, interval: HOUR_MS }
+  )
+  const lines = out.split('\n')
+
+  t.is(lines[1], '"2026","July","1069.2","79.2","100","99"', 'the 3 hours before Aug 1 00:00 UTC are still July locally')
+  t.is(lines[2], '"2026","August","16038","79.2","100","99"', 'the remaining 45 hours land in August')
+  t.is(lines.length, 3, 'a range opening on a UTC month boundary spans 2 local months')
+  t.pass()
+})
+
+test('invoicing-monthly-hashes - a month the pool never reported delivers null, not zero', async (t) => {
+  const { out } = await runExport(
+    'invoicing-monthly-hashes',
     { start: START, end: START + DAY_MS, timezone: 'UTC', format: 'json' },
     { buckets: 24, interval: HOUR_MS, poolHashrateHs: null }
   )

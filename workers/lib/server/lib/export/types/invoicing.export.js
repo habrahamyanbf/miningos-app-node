@@ -7,7 +7,7 @@ const {
   resolveCostParametersForMonth
 } = require('../../../handlers/finance.handlers')
 const { formatDateTime } = require('../mappers')
-const { rollupLocalDays, poolPctOfNominal, invoicePeriodPoolPctOfNominal } = require('../../../../metrics.utils')
+const { rollupLocalDays, rollupLocalMonths, poolPctOfNominal, invoicePeriodPoolPctOfNominal } = require('../../../../metrics.utils')
 
 const SECONDS = { hour: 3600 }
 const EXPORT_PRECISION = 3
@@ -83,7 +83,7 @@ function buildHashesEntry ({ type, interval, seconds, rollup, filenamePrefix, pe
       const { log } = await getHashrate(ctx, {
         query: { start: params.start, end: params.end, interval, nominal: true, pool: true }
       })
-      const buckets = rollup ? rollupLocalDays(log, timezone) : log
+      const buckets = rollup ? rollup(log, timezone) : log
 
       async function * rows () {
         for (const entry of buckets) {
@@ -122,11 +122,24 @@ const invoicingHourlyHashes = buildHashesEntry({
 const invoicingDailyHashes = buildHashesEntry({
   type: 'invoicing-daily-hashes',
   interval: '1h',
-  rollup: true,
+  rollup: rollupLocalDays,
   filenamePrefix: 'invoicing_daily_hashes_',
   periodColumns: ['month', 'day'],
   mapPeriod (ts, timezone) {
     return { month: monthName(ts, timezone), day: dateParts(ts, timezone).day }
+  }
+})
+
+// Same hourly source as the daily export: the site's calendar month cannot be formed
+// from the backend's UTC-aligned daily buckets, so the months are rolled up here.
+const invoicingMonthlyHashes = buildHashesEntry({
+  type: 'invoicing-monthly-hashes',
+  interval: '1h',
+  rollup: rollupLocalMonths,
+  filenamePrefix: 'invoicing_monthly_hashes_',
+  periodColumns: ['year', 'month'],
+  mapPeriod (ts, timezone) {
+    return { year: dateParts(ts, timezone).year, month: monthName(ts, timezone) }
   }
 })
 
@@ -210,4 +223,4 @@ const invoiceBreakdown = {
   }
 }
 
-module.exports = { invoicingHourlyHashes, invoicingDailyHashes, invoiceBreakdown }
+module.exports = { invoicingHourlyHashes, invoicingDailyHashes, invoicingMonthlyHashes, invoiceBreakdown }
