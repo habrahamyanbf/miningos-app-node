@@ -11,6 +11,7 @@ const { rollupLocalDays, poolPctOfNominal, invoicePeriodPoolPctOfNominal } = req
 
 const SECONDS = { hour: 3600 }
 const EXPORT_PRECISION = 3
+const PCT_OF_NOMINAL_PRECISION = 2
 
 const BREAKDOWN_COLUMNS = [
   'year', 'month', 'energyConsumedMwh', 'lcoeUsdPerMwh', 'energyCostsUsd', 'operationalCostUsd',
@@ -49,12 +50,11 @@ function monthName (ts, timezone) {
   return new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'long' }).format(new Date(ts))
 }
 
-// The UI rounds every exported figure to 3 decimals; matching it keeps a CSV
-// pulled from the API identical to one saved from the invoice screen.
 function roundRow (row) {
-  return Object.fromEntries(Object.entries(row).map(
-    ([column, value]) => [column, typeof value === 'number' ? Number(value.toFixed(EXPORT_PRECISION)) : value]
-  ))
+  return Object.fromEntries(Object.entries(row).map(([column, value]) => {
+    const precision = column === 'pctOfNominal' ? PCT_OF_NOMINAL_PRECISION : EXPORT_PRECISION
+    return [column, typeof value === 'number' ? Number(value.toFixed(precision)) : value]
+  }))
 }
 
 function num (value) {
