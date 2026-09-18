@@ -932,6 +932,116 @@ test('handlers: updateWorkOrder forwards warranty payload to updateThing', async
   t.is(flow.lastPush.params[0].info.warranty.fields.rmaNumber, 'RMA-1')
 })
 
+function buildMacSyncCtx (pushed, { wo, miner, part, pushError } = {}) {
+  const ctx = createMockCtxWithOrks([{ rpcPublicKey: 'k' }], async (_k, method, params) => {
+    if (method === 'pushAction') {
+      pushed.push(params)
+      if (pushError && params.query?.rack === miner?.rack) return { error: pushError }
+      return { id: 'a', errors: [] }
+    }
+    if (method === 'listThings') {
+      if (params.query?.type === 'inventory-work_order') return wo ? [wo] : []
+      const id = (params.query?.$or || []).map(c => c.id).find(Boolean)
+      if (miner && id === miner.id) return [miner]
+      if (part && id === part.id) return [part]
+      return []
+    }
+    return null
+  })
+  ctx.authLib = mockAuthLib
+  ctx._workOrderRackId = RACK
+  return ctx
+}
+
+const MAC_SYNC_WO = { id: 'wo-1', code: 'IVI-3-0001', type: 'inventory-work_order', info: { minerIdentifier: 'miner-1' } }
+const MAC_SYNC_MINER = { id: 'miner-1', code: 'MN-1', type: 'miner-whatsminer', rack: 'miner-rack-1', info: { macAddress: 'AA:BB:CC:00:00:01' } }
+const MAC_SYNC_PART = { id: 'part-9', code: 'CB-9', type: 'inventory-miner_part-controller', rack: 'cb-rack-1', info: { parentDeviceId: 'miner-1', macAddress: '9C:2F:D8:55:F1:C6' } }
+
+const macSyncBody = (moves) => ({
+  params: { id: 'wo-1' },
+  body: { info: { partsMoves: moves } }
+})
+
+const CB_REPLACEMENT_MOVE = { role: 'replacement', deviceType: 'controller', partId: 'part-9', partCode: '9C:2F:D8:55:F1:C6' }
+
+test('handlers: updateWorkOrder carries a replaced controller MAC onto the miner record', async (t) => {
+  const pushed = []
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part: MAC_SYNC_PART })
+  await handlers.updateWorkOrder(ctx, { ...userMeta(), ...macSyncBody([CB_REPLACEMENT_MOVE]) })
+
+  t.is(pushed.length, 2, 'miner MAC update then the WO update')
+  const [minerPush, woPush] = pushed
+  t.is(minerPush.query.rack, 'miner-rack-1', 'targets the miner rack')
+  t.is(minerPush.params[0].id, 'miner-1')
+  t.is(minerPush.params[0].info.macAddress, '9C:2F:D8:55:F1:C6')
+  t.is(minerPush.params[0].info.workOrderId, 'wo-1', 'the rack demands the WO reference')
+  t.ok(minerPush.authPerms.includes('miner:rw'), 'elevates so repair roles can write the miner rack')
+  t.is(woPush.params[0].id, 'wo-1')
+  t.is(woPush.params[0].info.partsMoves.length, 1, 'the WO update is persisted unchanged')
+})
+
+test('handlers: updateWorkOrder normalizes a bare-hex controller MAC before writing it', async (t) => {
+  const pushed = []
+  const part = { ...MAC_SYNC_PART, info: { ...MAC_SYNC_PART.info, macAddress: '9c2fd855f1c6' } }
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part })
+  await handlers.updateWorkOrder(ctx, { ...userMeta(), ...macSyncBody([CB_REPLACEMENT_MOVE]) })
+  t.is(pushed[0].params[0].info.macAddress, '9C:2F:D8:55:F1:C6')
+})
+
+test('handlers: updateWorkOrder skips the MAC push when the miner already carries it', async (t) => {
+  const pushed = []
+  const miner = { ...MAC_SYNC_MINER, info: { macAddress: '9c2fd855f1c6' } }
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner, part: MAC_SYNC_PART })
+  await handlers.updateWorkOrder(ctx, { ...userMeta(), ...macSyncBody([CB_REPLACEMENT_MOVE]) })
+  t.is(pushed.length, 1, 'only the WO update goes out')
+  t.is(pushed[0].params[0].id, 'wo-1')
+})
+
+test('handlers: updateWorkOrder skips the MAC push when the part is no longer attached to the miner', async (t) => {
+  const pushed = []
+  const part = { ...MAC_SYNC_PART, info: { ...MAC_SYNC_PART.info, parentDeviceId: 'miner-2' } }
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part })
+  await handlers.updateWorkOrder(ctx, { ...userMeta(), ...macSyncBody([CB_REPLACEMENT_MOVE]) })
+  t.is(pushed.length, 1, 'only the WO update goes out')
+})
+
+test('handlers: updateWorkOrder ignores non-controller replacement moves', async (t) => {
+  const pushed = []
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part: MAC_SYNC_PART })
+  await handlers.updateWorkOrder(ctx, {
+    ...userMeta(),
+    ...macSyncBody([{ role: 'replacement', deviceType: 'psu', partId: 'part-9' }])
+  })
+  t.is(pushed.length, 1, 'only the WO update goes out')
+})
+
+test('handlers: updateWorkOrder syncs from the newest controller replacement when the WO holds several', async (t) => {
+  const pushed = []
+  const ctx = buildMacSyncCtx(pushed, { wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part: MAC_SYNC_PART })
+  await handlers.updateWorkOrder(ctx, {
+    ...userMeta(),
+    ...macSyncBody([
+      { role: 'replacement', deviceType: 'controller', partId: 'part-old' },
+      CB_REPLACEMENT_MOVE
+    ])
+  })
+  t.is(pushed.length, 2)
+  t.is(pushed[0].params[0].id, 'miner-1')
+  t.is(pushed[0].params[0].info.macAddress, '9C:2F:D8:55:F1:C6')
+})
+
+test('handlers: updateWorkOrder surfaces a failed miner MAC push and leaves the WO unwritten', async (t) => {
+  const pushed = []
+  const ctx = buildMacSyncCtx(pushed, {
+    wo: MAC_SYNC_WO, miner: MAC_SYNC_MINER, part: MAC_SYNC_PART, pushError: 'ERR_MAC_INVALID'
+  })
+  await t.exception(
+    () => handlers.updateWorkOrder(ctx, { ...userMeta(), ...macSyncBody([CB_REPLACEMENT_MOVE]) }),
+    /ERR_WO_MINER_MAC_SYNC_FAILED:ERR_MAC_INVALID/
+  )
+  t.is(pushed.length, 1, 'the WO update is not pushed after the sync fails')
+})
+
 test('handlers: closeWorkOrder maps to updateThing with status=closed and finalResult', async (t) => {
   const flow = buildSubmitFlow()
   await handlers.closeWorkOrder(flow.ctx, {

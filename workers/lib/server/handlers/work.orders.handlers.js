@@ -451,9 +451,48 @@ async function createWorkOrdersBatch (ctx, req) {
   return submitWorkOrderAction(ctx, req, 'registerThing', { id: woId, info })
 }
 
+function _formatMacAddress (mac) {
+  if (!mac) return null
+  const raw = String(mac).trim().toUpperCase()
+  if (/^[0-9A-F]{12}$/.test(raw)) return raw.match(/.{2}/g).join(':')
+  return raw
+}
+
+// A miner's MAC address belongs to its control board, so a WO that records a
+// controller replacement must carry the new board's MAC onto the miner record —
+// otherwise Inventory keeps reporting the removed board's MAC.
+async function _syncMinerMacAddress (ctx, req, woId, partsMoves) {
+  if (!Array.isArray(partsMoves)) return
+  const replacement = partsMoves
+    .filter(m => m?.role === 'replacement' && m.deviceType === 'controller' && m.partId)
+    .pop()
+  if (!replacement) return
+
+  const wo = await _loadWorkOrderByIdOrCode(ctx, woId)
+  if (!wo?.info?.minerIdentifier) return
+
+  const miner = await _resolvePartByIdentifier(ctx, wo.info.minerIdentifier)
+  if (!miner || !_isMiner(miner)) return
+
+  const part = await _resolvePartByIdentifier(ctx, replacement.partId)
+  if (!part || part.info?.parentDeviceId !== miner.id) return
+
+  const macAddress = _formatMacAddress(part.info?.macAddress)
+  if (!macAddress || macAddress === _formatMacAddress(miner.info?.macAddress)) return
+
+  const results = await submitWorkOrderAction(ctx, req, 'updateThing', {
+    id: miner.id,
+    info: { macAddress, workOrderId: wo.id }
+  }, miner.rack, { elevateRackWrite: true })
+  assertActionApplied(results, 'ERR_WO_MINER_MAC_SYNC_FAILED')
+  await assertActionsExecuted(ctx, req, 'ERR_WO_MINER_MAC_SYNC_FAILED')
+}
+
 async function updateWorkOrder (ctx, req) {
   const { info: extraInfo, ...body } = req.body
-  return submitWorkOrderAction(ctx, req, 'updateThing', { id: req.params.id, info: { ...body, ...extraInfo } })
+  const info = { ...body, ...extraInfo }
+  await _syncMinerMacAddress(ctx, req, req.params.id, info.partsMoves)
+  return submitWorkOrderAction(ctx, req, 'updateThing', { id: req.params.id, info })
 }
 
 async function closeWorkOrder (ctx, req) {
