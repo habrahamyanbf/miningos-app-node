@@ -69,14 +69,14 @@ test('invoicing exports require a valid range', async (t) => {
   t.pass()
 })
 
-test('invoicing exports round every figure to three decimals', async (t) => {
+test('invoicing exports round % of nominal to two decimals and every other figure to three', async (t) => {
   const { out } = await runExport(
     'invoicing-hourly-hashes',
     { start: START, end: START + HOUR_MS, timezone: 'UTC', format: 'csv' },
-    { buckets: 1, hashrateMhs: 123456789012.3 }
+    { buckets: 1, hashrateMhs: 123456789012.3, poolHashrateHs: 9.87654e16 }
   )
 
-  t.is(out.split('\n')[1], '"01/08/2026","00:00","356.4","79.2","123.457","99"', 'matches the precision the UI exports')
+  t.is(out.split('\n')[1], '"01/08/2026","00:00","355.555","79.01","123.457","98.765"')
   t.pass()
 })
 
