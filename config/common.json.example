@@ -50,6 +50,7 @@
     "isReportingEnabled": true,
     "projectFinancials": true,
     "poolRebates": true,
+    "lockedTimeZone": true,
     "centralDCSSetup": {
       "enabled": false,
       "tag": "t-dcs"
