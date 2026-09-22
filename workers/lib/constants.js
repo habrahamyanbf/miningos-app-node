@@ -318,6 +318,12 @@ const DEFAULTS = {
   OPERATION_COUNT: 1
 }
 
+// Display-only fallback for getFeatureConfig's `lockedTimezone` field when
+// common.json's featureConfig.lockedTimezone isn't set. It does not feed into
+// start/end or log ts conversion - those only convert on an explicit request
+// `timezone` (see resolveTimezone in metrics.utils.js).
+const LOCKED_TIMEZONE_DEFAULT = 'America/Campo_Grande'
+
 const STATUS_CODES = {
   OK: 200,
   BAD_REQUEST: 400,
@@ -1415,6 +1421,7 @@ module.exports = {
   HTTP_METHODS,
   OPERATIONS,
   DEFAULTS,
+  LOCKED_TIMEZONE_DEFAULT,
   STATUS_CODES,
   RPC_TIMEOUT,
   RPC_CONCURRENCY_LIMIT,
