@@ -88,9 +88,9 @@ module.exports = (ctx) => {
         AUTH_ONLY
       )
     },
-    {
+    ...[ENDPOINTS.FEATURE_CONFIG, ENDPOINTS.FEATURES].map((url) => ({
       method: HTTP_METHODS.POST,
-      url: ENDPOINTS.FEATURES,
+      url,
       ...createAuthRoute(ctx, async (ctx, req) => {
         const success = await setFeatures(ctx, req)
         return { success }
@@ -98,7 +98,7 @@ module.exports = (ctx) => {
       schema: {
         body: schemas.body.features
       }
-    },
+    })),
     {
       method: HTTP_METHODS.GET,
       url: ENDPOINTS.GLOBAL_CONFIG,
