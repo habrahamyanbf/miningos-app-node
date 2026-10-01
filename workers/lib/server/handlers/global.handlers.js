@@ -1,7 +1,7 @@
 'use strict'
 const gLibUtilBase = require('@bitfinex/lib-js-util-base')
 const { GLOBAL_DATA_TYPES, LOCKED_TIMEZONE_DEFAULT, POOL_REBATE_SOURCES } = require('../../constants')
-const { parseJsonQueryParam } = require('../../utils')
+const { parseJsonQueryParam, sanitizeIncludeFields } = require('../../utils')
 const {
   getAutoPoolRebates,
   getCombinedPoolRebates,
@@ -29,7 +29,7 @@ async function getGlobalData (ctx, req) {
   }
 
   if (req.query.fields) {
-    req.query.fields = parseJsonQueryParam(req.query.fields, 'ERR_FIELDS_INVALID_JSON')
+    req.query.fields = sanitizeIncludeFields(parseJsonQueryParam(req.query.fields, 'ERR_FIELDS_INVALID_JSON'))
   }
 
   if (type === GLOBAL_DATA_TYPES.POOL_REBATES) {
@@ -146,7 +146,7 @@ async function setFeatures (ctx, req) {
 
 async function getGlobalConfig (ctx, req, rep) {
   if (req.query.fields) {
-    req.query.fields = parseJsonQueryParam(req.query.fields, 'ERR_FIELDS_INVALID_JSON')
+    req.query.fields = sanitizeIncludeFields(parseJsonQueryParam(req.query.fields, 'ERR_FIELDS_INVALID_JSON'))
   }
 
   return await ctx.dataProxy.requestDataMap('getGlobalConfig', req.query)
