@@ -30,12 +30,6 @@ const schemas = {
       },
       required: ['type']
     },
-    features: {
-      type: 'object',
-      properties: {
-        overwriteCache: { type: 'boolean' }
-      }
-    },
     globalConfig: {
       type: 'object',
       properties: {
