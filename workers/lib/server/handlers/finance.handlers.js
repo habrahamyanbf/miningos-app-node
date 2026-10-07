@@ -27,6 +27,7 @@ const {
   pricingStatus
 } = require('./finance.utils')
 const { getCombinedPoolRebates } = require('./rebates.utils')
+const { isCentralDCSEnabled, fetchDcsThing } = require('../../dcs.utils')
 
 // First instant of the local calendar month (in `timezone`) containing `ts`.
 function localMonthStart (ts, timezone) {
@@ -922,6 +923,7 @@ async function getRevenueSummary (ctx, req) {
     priceResults,
     currentPriceResults,
     dailyPower,
+    dailyMiningPower,
     dailyHashrate,
     productionCosts,
     blockResults,
@@ -947,6 +949,9 @@ async function getRevenueSummary (ctx, req) {
     }).then(r => cb(null, r)).catch(cb),
 
     (cb) => getDailySeries(ctx, start, end, getConsumption, 'powerW', timezone)
+      .then(r => cb(null, r)).catch(cb),
+
+    (cb) => getDailySeries(ctx, start, end, getMiningConsumption, 'miningPowerW', timezone)
       .then(r => cb(null, r)).catch(cb),
 
     (cb) => getDailySeries(ctx, start, end, getHashrate, 'hashrateMhs', timezone)
@@ -1062,6 +1067,7 @@ async function getRevenueSummary (ctx, req) {
       btcPrice,
       powerW,
       consumptionMWh,
+      ...(dayTs in dailyMiningPower && { miningConsumptionMWh: (dailyMiningPower[dayTs] * 24) / 1000000 }),
       hashrateMhs,
       energyCostsUSD,
       operationalCostsUSD,
@@ -1108,7 +1114,10 @@ async function getRevenueSummary (ctx, req) {
     ],
     timezone
   })
-  for (const entry of aggregated) entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
+  for (const entry of aggregated) {
+    entry.btcProductionCost = safeDiv(entry.totalCostsUSD, entry.revenueBTC)
+    entry.miningConsumptionMWh ??= null
+  }
   const summary = calculateDetailedRevenueSummary(aggregated, currentBtcPrice)
 
   return { log: aggregated, summary: { ...summary, ...pricingStatus(missingPriceBuckets) } }
@@ -1138,6 +1147,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
       totalNetCashUSD: 0,
       totalCostsUSD: 0,
       totalConsumptionMWh: 0,
+      totalMiningConsumptionMWh: null,
       avgCostPerMWh: null,
       avgRevenuePerMWh: null,
       avgNetRevenuePerMWh: null,
@@ -1172,6 +1182,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     acc.miningNetUSD += entry.miningNetUSD || 0
     acc.netCashUSD += entry.netCashUSD || 0
     acc.consumptionMWh += entry.consumptionMWh || 0
+    if (entry.miningConsumptionMWh != null) acc.miningConsumptionMWh = (acc.miningConsumptionMWh ?? 0) + entry.miningConsumptionMWh
     acc.ebitdaSelling += entry.ebitdaSelling || 0
     acc.ebitdaHodl += entry.ebitdaHodl || 0
     acc.btcPriceSum += entry.btcPrice || 0
@@ -1207,6 +1218,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     miningNetUSD: 0,
     netCashUSD: 0,
     consumptionMWh: 0,
+    miningConsumptionMWh: null,
     ebitdaSelling: 0,
     ebitdaHodl: 0,
     btcPriceSum: 0,
@@ -1240,6 +1252,7 @@ function calculateDetailedRevenueSummary (log, currentBtcPrice) {
     totalNetCashUSD: totals.netCashUSD,
     totalCostsUSD: totals.costsUSD,
     totalConsumptionMWh: totals.consumptionMWh,
+    totalMiningConsumptionMWh: totals.miningConsumptionMWh,
     avgCostPerMWh: safeDiv(totals.costsUSD, totals.consumptionMWh),
     avgRevenuePerMWh: safeDiv(totals.revenueUSD, totals.consumptionMWh),
     avgNetRevenuePerMWh: safeDiv(totals.miningNetUSD, totals.consumptionMWh),
@@ -1681,6 +1694,28 @@ function resolveLcoeUsdPerMwh (costParameters, monthKey) {
 function resolveEnergyCostsUSD (costs, consumptionMWh, lcoeUsdPerMwh) {
   if (costs.energyCostPerDay === null) return consumptionMWh * lcoeUsdPerMwh
   return costs.energyCostPerDay || 0
+}
+
+// by_meter_power_w keys are the DCS worker's snake-cased equipment ids (QDFL-1P -> qdfl-1_p).
+const meterKey = (id) => String(id).toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// Mining power = the DCS "rack" power meters; hours without a rack reading are left unknown.
+async function getMiningConsumption (ctx, req) {
+  if (!isCentralDCSEnabled(ctx)) return { log: [] }
+
+  const [{ log }, dcsThing] = await Promise.all([
+    getConsumption(ctx, { ...req, query: { ...req.query, byMeter: true } }),
+    fetchDcsThing(ctx, { type: 1, 'last.snap.stats.dcs_specific.equipment.power_meters': 1 })
+  ])
+  const powerMeters = dcsThing?.last?.snap?.stats?.dcs_specific?.equipment?.power_meters || []
+  const rackMeters = new Set(powerMeters.filter(pm => pm.role === 'rack').map(pm => meterKey(pm.equipment)))
+
+  return {
+    log: log.map(({ ts, powerW }) => {
+      const rack = Object.entries(powerW).filter(([meter]) => rackMeters.has(meterKey(meter)))
+      return { ts, miningPowerW: rack.length ? rack.reduce((sum, [, w]) => sum + (Number(w) || 0), 0) : undefined }
+    })
+  }
 }
 
 module.exports = {
