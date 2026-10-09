@@ -45,6 +45,7 @@ module.exports = (ctx) => {
         ctx,
         (req) => [
           'metrics/hashrate',
+          req.query.phase,
           req.query.start,
           req.query.end,
           req.query.interval,
@@ -74,7 +75,7 @@ module.exports = (ctx) => {
       preValidation: rejectTimezone(),
       ...createCachedAuthRoute(
         ctx,
-        (req) => ['metrics/pool-hashrate', req.query.interval, req.query.lookbackDays],
+        (req) => ['metrics/pool-hashrate', req.query.interval, req.query.lookbackDays, req.query.phase],
         ENDPOINTS.METRICS_POOL_HASHRATE,
         getPoolHashrate,
         [AUTH_PERMISSIONS.MINERPOOL]
@@ -91,6 +92,7 @@ module.exports = (ctx) => {
         ctx,
         (req) => [
           'metrics/consumption',
+          req.query.phase,
           req.query.start,
           req.query.end,
           req.query.interval,
@@ -114,6 +116,7 @@ module.exports = (ctx) => {
         ctx,
         (req) => [
           'metrics/efficiency',
+          req.query.phase,
           req.query.start,
           req.query.end,
           req.query.interval,
@@ -325,6 +328,7 @@ module.exports = (ctx) => {
         ctx,
         (req) => [
           'metrics/downtime',
+          req.query.phase,
           req.query.start,
           req.query.end,
           req.query.interval,
