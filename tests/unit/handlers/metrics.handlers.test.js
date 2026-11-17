@@ -485,6 +485,112 @@ test('getHashrate - interval selects the bucket range', async (t) => {
   t.pass()
 })
 
+test('getHashrate - short intervals read the stat log as written, one entry per stat bucket', async (t) => {
+  const captured = []
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method, payload) => {
+        captured.push(payload)
+        return [
+          { ts: 1700000300000, hashrate_mhs_5m_sum_aggr: 100000 },
+          { ts: 1700000600000, hashrate_mhs_5m_sum_aggr: 110000 }
+        ]
+      }
+    }
+  })
+
+  const query = { start: 1700000000000, end: 1700086400000 }
+  const result = await getHashrate(mockCtx, { query: { ...query, interval: '5m' } })
+  await getHashrate(mockCtx, { query: { ...query, interval: '30m' } })
+  await getHashrate(mockCtx, { query: { ...query, interval: '3h' } })
+
+  t.is(captured[0].key, 'stat-5m', '5m should read the stat-5m log')
+  t.is(captured[0].groupRange, undefined, '5m should not regroup the stat buckets')
+  t.is(captured[1].key, 'stat-30m', '30m should read the stat-30m log')
+  t.is(captured[1].groupRange, undefined, '30m should not regroup the stat buckets')
+  t.is(captured[2].key, 'stat-3h', '3h should read the stat-3h log')
+  t.is(captured[2].groupRange, undefined, '3h should not regroup the stat buckets')
+  t.alike(
+    result.log.map(({ ts, hashrateMhs }) => ({ ts, hashrateMhs })),
+    [{ ts: 1700000300000, hashrateMhs: 100000 }, { ts: 1700000600000, hashrateMhs: 110000 }],
+    'should emit each stat entry at its own time'
+  )
+})
+
+test('getHashrate - a short interval over too long a range is refused before any read', async (t) => {
+  let requested = false
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async () => {
+        requested = true
+        return []
+      }
+    }
+  })
+
+  // 32 days of 5-minute buckets is 9216 rows, over the 9000-row cap of raw reads
+  const start = 1700000000000
+  await t.exception(
+    () => getHashrate(mockCtx, { query: { start, end: start + 32 * METRICS_TIME.ONE_DAY_MS, interval: '5m' } }),
+    /ERR_RANGE_TOO_LARGE/,
+    'should refuse the range'
+  )
+  t.is(requested, false, 'should not read the store')
+})
+
+test('getHashrate - groupBy with a short interval over too long a range is refused before any read', async (t) => {
+  let requested = false
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async () => {
+        requested = true
+        return []
+      }
+    }
+  })
+
+  const start = 1700000000000
+  await t.exception(
+    () => getHashrate(mockCtx, { query: { start, end: start + 32 * METRICS_TIME.ONE_DAY_MS, interval: '5m', groupBy: 'miner' } }),
+    /ERR_RANGE_TOO_LARGE/,
+    'should refuse the range'
+  )
+  t.is(requested, false, 'should not read the store')
+})
+
+test('getHashrate - pool=true on a short interval pairs pool samples with each 5-minute bucket', async (t) => {
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: {
+      jRequest: async (key, method) => {
+        if (method === 'getWrkExtData') {
+          return [{
+            hashrateHistory: [
+              { poolType: 'ocean', ts: 1700000360000, username: 'a', hashrate: 100e6 },
+              { poolType: 'ocean', ts: 1700000660000, username: 'a', hashrate: 300e6 }
+            ]
+          }]
+        }
+        return [
+          { ts: 1700000300000, hashrate_mhs_5m_sum_aggr: 100000 },
+          { ts: 1700000600000, hashrate_mhs_5m_sum_aggr: 110000 }
+        ]
+      }
+    }
+  })
+
+  const result = await getHashrate(mockCtx, {
+    query: { start: 1700000000000, end: 1700086400000, interval: '5m', pool: true }
+  })
+
+  // An hour-wide bucket would have averaged both samples into the first entry
+  t.is(result.log[0].poolHashrateMhs, 100, 'first bucket should hold only its own sample')
+  t.is(result.log[1].poolHashrateMhs, 300, 'second bucket should hold only its own sample')
+})
+
 test('getHashrate - pool=true merges pool hashrate per bucket, in MH/s', async (t) => {
   let capturedExtData = null
   const mockCtx = withDataProxy({
@@ -2483,6 +2589,10 @@ test('getIntervalConfig - returns correct configs', (t) => {
   const m = getIntervalConfig('1M')
   t.is(m.key, 'stat-3h', '1M key should be stat-3h')
   t.is(m.groupRange, '1M', '1M groupRange should be 1M')
+
+  t.alike(getIntervalConfig('5m'), { key: 'stat-5m' }, '5m should read stat-5m ungrouped')
+  t.alike(getIntervalConfig('30m'), { key: 'stat-30m' }, '30m should read stat-30m ungrouped')
+  t.alike(getIntervalConfig('3h'), { key: 'stat-3h' }, '3h should read stat-3h ungrouped')
 
   t.pass()
 })

@@ -5,6 +5,8 @@ const { POOL_HASHRATE_INTERVALS_MS, REALTIME_CHARTS } = require('../../constants
 // 1M is a 30-day month. Distinct from 1m (one minute) used by
 // powerModeTimeline / containerHistory.
 const METRICS_INTERVALS = ['1h', '1d', '1w', '1M']
+// Hashrate also reads the stat logs as written, at the steps the pool hashrate is served in.
+const HASHRATE_INTERVALS = ['5m', '30m', '3h', ...METRICS_INTERVALS]
 
 const schemas = {
   query: {
@@ -13,7 +15,7 @@ const schemas = {
       properties: {
         start: { type: 'integer', minimum: 0 },
         end: { type: 'integer', minimum: 0 },
-        interval: { type: 'string', enum: METRICS_INTERVALS },
+        interval: { type: 'string', enum: HASHRATE_INTERVALS },
         // Only read by the '1M' rollup, which cuts months in this zone rather than UTC.
         timezone: { type: 'string' },
         groupBy: { type: 'string', enum: ['miner', 'container', 'rack'] },

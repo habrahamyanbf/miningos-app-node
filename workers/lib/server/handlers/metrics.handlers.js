@@ -19,7 +19,8 @@ const {
   SITE_STATUS_LIVE_WINDOW_MS,
   ELECTRICITY_EXT_DATA_KEYS,
   MINERPOOL_EXT_DATA_KEYS,
-  POOL_HASHRATE_INTERVALS_MS
+  POOL_HASHRATE_INTERVALS_MS,
+  TAIL_LOG_BUCKET_MS
 } = require('../../constants')
 const {
   localDayStart,
@@ -43,6 +44,7 @@ const {
   extractContainerFromMinerKey,
   resolveInterval,
   getIntervalConfig,
+  assertIntervalRowLimit,
   mergeGroupedField,
   extractKeyEntry,
   rollupLocalMonths,
@@ -355,6 +357,7 @@ async function resolveHashrate (ctx, req, phase = null) {
   if (isLocalInterval(interval)) return resolveLocalHashrate(ctx, req, { interval, start, end }, phase)
 
   const { key, groupRange } = getIntervalConfig(interval)
+  assertIntervalRowLimit({ key, groupRange }, start, end)
   const container = req.query.container || null
   const field = container ? LOG_FIELDS.HASHRATE_SUM_CONTAINER_GROUP : LOG_FIELDS.HASHRATE_SUM
   const aggrField = hashrateAggrField(container)
@@ -410,7 +413,7 @@ async function resolveHashrate (ctx, req, phase = null) {
 
   if (withPool) {
     const accounts = phase ? lPhases.getPhaseAccountKeys(phase) : null
-    await mergePoolHashrate(ctx, log, { start, end, groupRange, accounts })
+    await mergePoolHashrate(ctx, log, { start, end, groupRange, key, accounts })
   }
 
   const summary = calculateHashrateSummary(log, withNominal)
@@ -469,10 +472,13 @@ async function getSiteNominalHashrate (ctx) {
 
 // Attaches the pool-reported hashrate to each miner-telemetry bucket, using the
 // bucket's own time window so both series cover exactly the same period.
-async function mergePoolHashrate (ctx, log, { start, end, groupRange, accounts = null }) {
+async function mergePoolHashrate (ctx, log, { start, end, groupRange, key, accounts = null }) {
   if (!log.length) return
 
-  const bucketMs = RANGE_BUCKETS[groupRange] || (60 * 60 * 1_000) // '1H'
+  // Ungrouped, a bucket is one stat entry of the log it was read from
+  const bucketMs = groupRange
+    ? RANGE_BUCKETS[groupRange] || HOUR_MS // '1H'
+    : TAIL_LOG_BUCKET_MS[key]
   const buckets = log.map((entry) => ({
     ts: entry.ts,
     startTs: entry.timeRange?.startTs ?? entry.ts,
@@ -629,11 +635,13 @@ async function getGoupedHashrate (ctx, req) {
   // and without a timeRange, so no pool sample paired with it.
   const interval = resolveInterval(start, end, req.query.interval)
   const local = isLocalInterval(interval)
+  const intervalConfig = getIntervalConfig(local ? '1h' : interval)
+  assertIntervalRowLimit(intervalConfig, start, end)
 
   const res = await ctx.dataProxy.requestData(RPC_METHODS.TAIL_LOG, {
     type: WORKER_TYPES.MINER,
     tag: WORKER_TAGS.MINER,
-    ...getIntervalConfig(local ? '1h' : interval),
+    ...intervalConfig,
     shouldCalculateAvg: true,
     start,
     end,

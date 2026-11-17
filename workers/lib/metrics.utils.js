@@ -1,7 +1,7 @@
 'use strict'
 
 const { getStartOfDay, zoneOffsetMs, localDayStart, localWeekStart, localMonthStartTs, requireZone } = require('./period.utils')
-const { METRICS_TIME, LOG_KEYS, LOCKED_TIMEZONE_DEFAULT } = require('./constants')
+const { METRICS_TIME, LOG_KEYS, LOCKED_TIMEZONE_DEFAULT, TAIL_LOG_BUCKET_MS, TAIL_LOG_MAX_ROWS } = require('./constants')
 
 /**
  * Parse timestamp from RPC entry.
@@ -135,6 +135,14 @@ function resolveInterval (start, end, requested) {
 
 function getIntervalConfig (interval) {
   switch (interval) {
+    // Short views read a stat log as written, one entry per stat bucket, so the site series
+    // has the step of the pool series it is drawn next to (see assertIntervalRowLimit).
+    case '5m':
+      return { key: LOG_KEYS.STAT_5M }
+    case '30m':
+      return { key: LOG_KEYS.STAT_30M }
+    case '3h':
+      return { key: LOG_KEYS.STAT_3H }
     case '1h':
       // Sample the finer-grained stat-30m log and bucket it into 1h windows,
       // so hourly views aren't coarsened to the 3h stat cadence.
@@ -147,6 +155,13 @@ function getIntervalConfig (interval) {
     default:
       return { key: LOG_KEYS.STAT_3H, groupRange: '1D' }
   }
+}
+
+// An ungrouped read returns one entry per stat bucket, so its row count grows with the
+// range: hold it to the cap the tail-log route holds raw reads to.
+function assertIntervalRowLimit ({ key, groupRange }, start, end) {
+  if (groupRange) return
+  if ((end - start) / TAIL_LOG_BUCKET_MS[key] > TAIL_LOG_MAX_ROWS) throw new Error('ERR_RANGE_TOO_LARGE')
 }
 
 function extractKeyEntry (orkResult, keyIndex) {
@@ -471,6 +486,7 @@ module.exports = {
   extractKeyEntry,
   resolveInterval,
   getIntervalConfig,
+  assertIntervalRowLimit,
   zoneOffsetMs,
   rollupLocalDays,
   rollupLocalMonths,
