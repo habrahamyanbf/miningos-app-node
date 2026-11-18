@@ -6,6 +6,11 @@ const { POOL_HASHRATE_INTERVALS_MS, REALTIME_CHARTS } = require('../../constants
 // powerModeTimeline / containerHistory.
 const METRICS_INTERVALS = ['1h', '1d', '1w', '1M']
 
+// Hashrate alone reaches below the hour: stat-5m / stat-30m carry the site aggregate at
+// their own cadence, so the dashboard can plot a 5-minute series instead of hourly means.
+// Other metrics stay on METRICS_INTERVALS - their handlers have no raw-read path.
+const HASHRATE_INTERVALS = ['5m', '30m', '3h', ...METRICS_INTERVALS]
+
 const schemas = {
   query: {
     hashrate: {
@@ -13,7 +18,7 @@ const schemas = {
       properties: {
         start: { type: 'integer', minimum: 0 },
         end: { type: 'integer', minimum: 0 },
-        interval: { type: 'string', enum: METRICS_INTERVALS },
+        interval: { type: 'string', enum: HASHRATE_INTERVALS },
         // Only read by the '1M' rollup, which cuts months in this zone rather than UTC.
         timezone: { type: 'string' },
         groupBy: { type: 'string', enum: ['miner', 'container', 'rack'] },

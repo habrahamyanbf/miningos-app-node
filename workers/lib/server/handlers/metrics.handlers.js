@@ -43,6 +43,8 @@ const {
   extractContainerFromMinerKey,
   resolveInterval,
   getIntervalConfig,
+  rawIntervalStepMs,
+  rawIntervalLimit,
   mergeGroupedField,
   extractKeyEntry,
   rollupLocalMonths,
@@ -368,12 +370,15 @@ async function resolveHashrate (ctx, req, phase = null) {
   // miner-telemetry series against what the pools credited.
   const withPool = req.query.pool === true || req.query.pool === 'true'
 
+  // A raw interval reads the log at its own cadence: no groupRange to bucket by and
+  // nothing to average, but a limit, since the store pages an ungrouped read.
+  const stepMs = rawIntervalStepMs(interval)
+  const rawLimit = rawIntervalLimit(interval, start, end)
   const res = await ctx.dataProxy.requestData(RPC_METHODS.TAIL_LOG, {
     type: WORKER_TYPES.MINER,
     tag: WORKER_TAGS.MINER,
     key,
-    groupRange,
-    shouldCalculateAvg: true,
+    ...(rawLimit ? { limit: rawLimit } : { groupRange, shouldCalculateAvg: true }),
     start,
     end,
     fields: { [field]: 1, ...(withNominal && { [LOG_FIELDS.NOMINAL_HASHRATE_SUM]: 1 }) },
@@ -410,7 +415,7 @@ async function resolveHashrate (ctx, req, phase = null) {
 
   if (withPool) {
     const accounts = phase ? lPhases.getPhaseAccountKeys(phase) : null
-    await mergePoolHashrate(ctx, log, { start, end, groupRange, accounts })
+    await mergePoolHashrate(ctx, log, { start, end, groupRange, bucketMs: stepMs, accounts })
   }
 
   const summary = calculateHashrateSummary(log, withNominal)
@@ -469,10 +474,11 @@ async function getSiteNominalHashrate (ctx) {
 
 // Attaches the pool-reported hashrate to each miner-telemetry bucket, using the
 // bucket's own time window so both series cover exactly the same period.
-async function mergePoolHashrate (ctx, log, { start, end, groupRange, accounts = null }) {
+async function mergePoolHashrate (ctx, log, { start, end, groupRange, bucketMs: rawBucketMs, accounts = null }) {
   if (!log.length) return
 
-  const bucketMs = RANGE_BUCKETS[groupRange] || (60 * 60 * 1_000) // '1H'
+  // A raw interval has no groupRange to look up, so its step comes in directly.
+  const bucketMs = rawBucketMs || RANGE_BUCKETS[groupRange] || (60 * 60 * 1_000) // '1H'
   const buckets = log.map((entry) => ({
     ts: entry.ts,
     startTs: entry.timeRange?.startTs ?? entry.ts,
@@ -512,9 +518,12 @@ async function resolvePoolOnlyHashrate (ctx, req, phase) {
   // Cut on the same grid as the phase's consumption and efficiency: whole hours inside
   // the range, and days/weeks in the site's zone clamped to [start, end]. The UTC grid
   // started the first bucket before `start` and ran the last one past `end`.
+  // A raw interval cuts on its own step instead, so a phase answers '5m' with 5-minute
+  // slots rather than silently handing back the hours every other interval is built from.
+  const stepMs = rawIntervalStepMs(interval) ?? HOUR_MS
   const hours = []
-  for (let ts = Math.ceil(start / HOUR_MS) * HOUR_MS; ts <= end; ts += HOUR_MS) {
-    hours.push({ ts, timeRange: { startTs: ts, endTs: ts + HOUR_MS - 1 } })
+  for (let ts = Math.ceil(start / stepMs) * stepMs; ts <= end; ts += stepMs) {
+    hours.push({ ts, timeRange: { startTs: ts, endTs: ts + stepMs - 1 } })
   }
   const slots = isLocalInterval(interval)
     ? groupLocalBuckets(hours, { interval, timezone: resolveTimezone(ctx, req), start, end })
@@ -629,11 +638,17 @@ async function getGoupedHashrate (ctx, req) {
   // and without a timeRange, so no pool sample paired with it.
   const interval = resolveInterval(start, end, req.query.interval)
   const local = isLocalInterval(interval)
+  // Grouped rows honour a raw interval too - coarsening one here would answer at a
+  // resolution nobody asked for, the very thing this path exists to stop. The limit is
+  // what makes that safe: an ungrouped read is paged, and without one a null groupRange
+  // would reach the store unbounded.
+  const rawLimit = local ? null : rawIntervalLimit(interval, start, end)
 
   const res = await ctx.dataProxy.requestData(RPC_METHODS.TAIL_LOG, {
     type: WORKER_TYPES.MINER,
     tag: WORKER_TAGS.MINER,
     ...getIntervalConfig(local ? '1h' : interval),
+    ...(rawLimit && { limit: rawLimit }),
     shouldCalculateAvg: true,
     start,
     end,
