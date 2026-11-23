@@ -1252,30 +1252,150 @@ test('calculateCostSummary - handles empty log', (t) => {
 
 // ==================== Subsidy Fees Tests ====================
 
-test('getSubsidyFees - happy path', async (t) => {
-  const mockCtx = withDataProxy({
-    conf: {
-      orks: [{ rpcPublicKey: 'key1' }]
-    },
-    net_r0: {
-      jRequest: async (key, method, payload) => {
-        if (method === 'getWrkExtData') {
-          return [{ data: [{ ts: 1700006400000, blockReward: 6.25, blockTotalFees: 0.5 }] }]
-        }
-        return {}
-      }
+const HOUR_MS = 3600000
+const blockStatsHour = (ts, blockCount, rewardPerBlock, feesPerBlock, sizePerBlock = 1500000) => ({
+  ts,
+  blockCount,
+  blockRewardSum: blockCount * rewardPerBlock,
+  blockTotalFeesSum: blockCount * feesPerBlock,
+  blockSizeSum: blockCount * sizePerBlock,
+  minHeight: 1,
+  maxHeight: blockCount
+})
+
+const subsidyFeesCtx = (rows, calls = [], orks = 1) => withDataProxy({
+  conf: {
+    orks: Array.from({ length: orks }, (_, i) => ({ rpcPublicKey: `key${i + 1}` }))
+  },
+  net_r0: {
+    jRequest: async (key, method, payload) => {
+      calls.push({ method, payload })
+      return method === 'getWrkExtData' ? rows : {}
     }
+  }
+})
+
+test('getSubsidyFees - averages every block of the day', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const calls = []
+  const ctx = subsidyFeesCtx([
+    blockStatsHour(day, 6, 313000000, 500000, 1400000),
+    blockStatsHour(day + HOUR_MS, 2, 315000000, 2500000, 1800000)
+  ], calls)
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, period: 'daily', timezone: 'UTC' }
   })
 
-  const mockReq = {
-    query: { start: 1700000000000, end: 1700100000000, period: 'daily' }
-  }
+  t.alike(result.log, [{
+    ts: day,
+    blockCount: 8,
+    blockReward: 313500000,
+    blockTotalFees: 1000000,
+    blockSize: 1500000
+  }], 'each block weighs the same, whichever hour it was mined in')
+  t.alike(result.summary, {
+    totalBlocks: 8,
+    totalBlockReward: 6 * 313000000 + 2 * 315000000,
+    totalBlockTotalFees: 6 * 500000 + 2 * 2500000,
+    totalBlockSize: 6 * 1400000 + 2 * 1800000,
+    avgBlockReward: 313500000,
+    avgBlockTotalFees: 1000000,
+    avgBlockSize: 1500000
+  })
 
-  const result = await getSubsidyFees(mockCtx, mockReq, {})
-  t.ok(result.log, 'should return log array')
-  t.ok(result.summary, 'should return summary')
-  t.ok(Array.isArray(result.log), 'log should be array')
-  t.pass()
+  const query = calls.find((call) => call.method === 'getWrkExtData').payload.query
+  t.is(query.key, 'HISTORICAL_BLOCK_STATS')
+  t.is(query.limit, 25, 'room for every hour of the range')
+})
+
+test('getSubsidyFees - groups the UTC hours into the site\'s own days', async (t) => {
+  const zone = 'America/Campo_Grande'
+  const localMidnight = Date.UTC(2026, 10, 2, 4)
+  const ctx = subsidyFeesCtx([
+    blockStatsHour(localMidnight - HOUR_MS, 4, 320000000, 7500000),
+    blockStatsHour(localMidnight, 5, 313000000, 500000),
+    blockStatsHour(localMidnight + 23 * HOUR_MS, 5, 314000000, 1500000),
+    blockStatsHour(localMidnight + 24 * HOUR_MS, 3, 330000000, 17500000)
+  ])
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: localMidnight - 24 * HOUR_MS, end: localMidnight + 48 * HOUR_MS - 1, timezone: zone }
+  })
+
+  t.alike(result.log.map(({ ts, blockCount, blockReward }) => ({ ts, blockCount, blockReward })), [
+    { ts: localMidnight - 24 * HOUR_MS, blockCount: 4, blockReward: 320000000 },
+    { ts: localMidnight, blockCount: 10, blockReward: 313500000 },
+    { ts: localMidnight + 24 * HOUR_MS, blockCount: 3, blockReward: 330000000 }
+  ], 'UTC midnight is not a day boundary at the site')
+})
+
+test('getSubsidyFees - an hour starting at the range end is left to the next day', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const ctx = subsidyFeesCtx([
+    blockStatsHour(day + 23 * HOUR_MS, 6, 313000000, 500000),
+    blockStatsHour(day + 24 * HOUR_MS, 6, 400000000, 87500000)
+  ])
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: day, end: day + 24 * HOUR_MS, timezone: 'UTC' }
+  })
+
+  t.is(result.log.length, 1)
+  t.is(result.log[0].ts, day)
+  t.is(result.log[0].blockReward, 313000000)
+})
+
+test('getSubsidyFees - monthly and weekly are block-weighted averages, not sums', async (t) => {
+  const nov1 = Date.UTC(2026, 10, 1)
+  const day = 24 * HOUR_MS
+  const rows = [
+    blockStatsHour(nov1, 100, 313000000, 500000),
+    blockStatsHour(nov1 + day, 300, 315000000, 2500000),
+    blockStatsHour(nov1 + 30 * day, 50, 320000000, 7500000)
+  ]
+  const query = { start: nov1, end: nov1 + 31 * day - 1, timezone: 'UTC' }
+
+  const monthly = await getSubsidyFees(subsidyFeesCtx(rows), { query: { ...query, period: 'monthly' } })
+  t.alike(monthly.log.map(({ ts, blockCount, blockReward, blockTotalFees }) => ({ ts, blockCount, blockReward, blockTotalFees })), [
+    { ts: nov1 + 30 * day, blockCount: 50, blockReward: 320000000, blockTotalFees: 7500000 },
+    { ts: nov1, blockCount: 400, blockReward: 314500000, blockTotalFees: 2000000 }
+  ], 'a month reads as its average block; the 300-block day outweighs the 100-block one')
+  t.is(monthly.log[1].monthName, 'November')
+  t.absent('blockRewardSum' in monthly.log[1], 'raw totals stay out of the rows')
+
+  const weekly = await getSubsidyFees(subsidyFeesCtx(rows), { query: { ...query, period: 'weekly' } })
+  t.ok(weekly.log.every((entry) => entry.blockReward < 325000000), 'no weekly bar is a multiple of a block reward')
+  t.is(weekly.log.reduce((sum, entry) => sum + entry.blockCount, 0), 450)
+
+  t.alike(monthly.summary, weekly.summary, 'the range summary does not depend on the bucket size')
+  t.is(monthly.summary.totalBlocks, 450)
+  t.is(monthly.summary.avgBlockReward, Math.round((100 * 313000000 + 300 * 315000000 + 50 * 320000000) / 450))
+})
+
+test('getSubsidyFees - the same hour from several orks is counted once', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const ctx = subsidyFeesCtx([blockStatsHour(day, 6, 313000000, 500000)], [], 3)
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
+  })
+
+  t.is(result.log[0].blockCount, 6)
+  t.is(result.summary.totalBlockReward, 6 * 313000000)
+})
+
+test('getSubsidyFees - a worker without block stats yields an empty log', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const ctx = subsidyFeesCtx({ currentPrice: 90000, blockHeight: 977000 })
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
+  })
+
+  t.alike(result.log, [])
+  t.is(result.summary.totalBlocks, 0)
+  t.is(result.summary.avgBlockReward, null)
 })
 
 test('getSubsidyFees - missing start throws', async (t) => {
@@ -1320,30 +1440,31 @@ test('getSubsidyFees - empty ork results', async (t) => {
   t.pass()
 })
 
-test('calculateSubsidyFeesSummary - calculates from log entries', (t) => {
-  const log = [
-    { blockReward: 6.25, blockTotalFees: 0.5, blockSize: 1500000 },
-    { blockReward: 6.25, blockTotalFees: 0.3, blockSize: 1300000 }
+test('calculateSubsidyFeesSummary - weights by block count', (t) => {
+  const totals = [
+    { blockCount: 1, blockRewardSum: 400000000, blockTotalFeesSum: 87500000, blockSizeSum: 1000000 },
+    { blockCount: 3, blockRewardSum: 3 * 320000000, blockTotalFeesSum: 3 * 7500000, blockSizeSum: 3 * 2000000 }
   ]
 
-  const summary = calculateSubsidyFeesSummary(log)
-  t.is(summary.totalBlockReward, 12.5, 'should sum block rewards')
-  t.is(summary.totalBlockTotalFees, 0.8, 'should sum block fees')
-  t.is(summary.totalBlockSize, 2800000, 'should sum block sizes')
-  t.ok(summary.avgBlockReward !== null, 'should calculate avg block reward')
-  t.is(summary.avgBlockReward, 6.25, 'should calculate correct avg block reward')
-  t.ok(summary.avgBlockTotalFees !== null, 'should calculate avg block fees')
-  t.is(summary.avgBlockSize, 1400000, 'should calculate correct avg block size')
-  t.pass()
+  const summary = calculateSubsidyFeesSummary(totals)
+  t.is(summary.totalBlocks, 4)
+  t.is(summary.totalBlockReward, 1360000000, 'should sum block rewards')
+  t.is(summary.totalBlockTotalFees, 110000000, 'should sum block fees')
+  t.is(summary.totalBlockSize, 7000000, 'should sum block sizes')
+  t.is(summary.avgBlockReward, 340000000, 'per block, not per row')
+  t.is(summary.avgBlockTotalFees, 27500000)
+  t.is(summary.avgBlockSize, 1750000)
 })
 
 test('calculateSubsidyFeesSummary - handles empty log', (t) => {
   const summary = calculateSubsidyFeesSummary([])
+  t.is(summary.totalBlocks, 0, 'should be zero')
   t.is(summary.totalBlockReward, 0, 'should be zero')
   t.is(summary.totalBlockTotalFees, 0, 'should be zero')
+  t.is(summary.totalBlockSize, 0, 'should be zero')
   t.is(summary.avgBlockReward, null, 'should be null')
   t.is(summary.avgBlockTotalFees, null, 'should be null')
-  t.pass()
+  t.is(summary.avgBlockSize, null, 'should be null')
 })
 
 // ==================== Revenue Tests ====================

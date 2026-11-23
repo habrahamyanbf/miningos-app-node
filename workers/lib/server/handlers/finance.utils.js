@@ -33,6 +33,10 @@ function historyLimit (start, end) {
   return Math.ceil((end - start) / 86400000) + 1
 }
 
+function hourlyHistoryLimit (start, end) {
+  return Math.ceil((end - start) / 3600000) + 1
+}
+
 // Worker timestamps arrive in whatever shape the upstream pool API uses: unix seconds
 // (f2pool `created_at`), unix ms, or an ISO-8601 string (ocean `ts`, e.g. "2026-05-28T16:46:30").
 // Anything it can't parse comes back as 0, and every caller skips a 0 before bucketing, so
@@ -343,6 +347,38 @@ function processBlockData (results, timezone) {
   return daily
 }
 
+const BLOCK_STATS_SUM_KEYS = ['blockCount', 'blockRewardSum', 'blockTotalFeesSum', 'blockSizeSum']
+
+function isBlockStatsRow (row) {
+  return !!row && Number.isFinite(row.ts) && row.blockCount > 0 &&
+    BLOCK_STATS_SUM_KEYS.every((key) => Number.isFinite(row[key]))
+}
+
+// Rolls the mempool worker's UTC-hourly block totals up into the site's local days. The
+// hours are network-wide, so every ork answers with the same rows: an hour is counted once
+// however many orks returned it. `end` is exclusive - an hour starting exactly at `end`
+// belongs to the next day, and would otherwise open a bucket holding that single hour.
+function processBlockStats (results, timezone, end = Infinity) {
+  const daily = {}
+  const seen = new Set()
+  for (const res of results) {
+    if (!res || res.error) continue
+    const data = Array.isArray(res) ? res : (res.data || res.result || [])
+    if (!Array.isArray(data)) continue
+    for (const entry of data) {
+      const rows = Array.isArray(entry?.data) ? entry.data : [entry]
+      for (const row of rows) {
+        if (!isBlockStatsRow(row) || row.ts >= end || seen.has(row.ts)) continue
+        seen.add(row.ts)
+        const ts = localDayStart(row.ts, timezone)
+        if (!daily[ts]) daily[ts] = { blockCount: 0, blockRewardSum: 0, blockTotalFeesSum: 0, blockSizeSum: 0 }
+        for (const key of BLOCK_STATS_SUM_KEYS) daily[ts][key] += row[key]
+      }
+    }
+  }
+  return daily
+}
+
 module.exports = {
   validateStartEnd,
   assertTimezone,
@@ -352,7 +388,9 @@ module.exports = {
   processTransactions,
   extractCurrentPrice,
   processBlockData,
+  processBlockStats,
   historyLimit,
+  hourlyHistoryLimit,
   priceBucket,
   fetchBucketPrices,
   priceDailyRevenue,

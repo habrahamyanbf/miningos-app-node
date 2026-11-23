@@ -9,7 +9,9 @@ const {
   normalizeTimestampMs,
   processTransactions,
   extractCurrentPrice,
-  processBlockData
+  processBlockData,
+  processBlockStats,
+  hourlyHistoryLimit
 } = require('../../../workers/lib/server/handlers/finance.utils')
 
 // ==================== validateStartEnd ====================
@@ -415,6 +417,61 @@ test('processBlockData - error/empty results', (t) => {
   t.is(Object.keys(processBlockData([{ error: 'timeout' }], 'UTC')).length, 0, 'error results empty')
   t.is(Object.keys(processBlockData([], 'UTC')).length, 0, 'empty results empty')
   t.pass()
+})
+
+// ==================== processBlockStats ====================
+
+const statsHour = (ts, blockCount = 6) => ({
+  ts, blockCount, blockRewardSum: blockCount * 100, blockTotalFeesSum: blockCount * 10, blockSizeSum: blockCount * 1000
+})
+
+test('processBlockStats - sums hours into days across result shapes', (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const flat = processBlockStats([[statsHour(day), statsHour(day + 3600000, 4), statsHour(day + 86400000, 2)]], 'UTC')
+  t.alike(flat, {
+    [day]: { blockCount: 10, blockRewardSum: 1000, blockTotalFeesSum: 100, blockSizeSum: 10000 },
+    [day + 86400000]: { blockCount: 2, blockRewardSum: 200, blockTotalFeesSum: 20, blockSizeSum: 2000 }
+  })
+
+  t.alike(processBlockStats([{ data: [statsHour(day), statsHour(day + 3600000, 4)] }], 'UTC')[day].blockCount, 10)
+  t.alike(processBlockStats([[{ data: [statsHour(day)] }]], 'UTC')[day].blockCount, 6)
+})
+
+test('processBlockStats - follows the zone, a DST-shifted day included', (t) => {
+  const zone = 'America/New_York'
+  const fallBack = Date.UTC(2026, 10, 1, 4)
+  const hours = Array.from({ length: 25 }, (_, i) => statsHour(fallBack + i * 3600000, 1))
+  hours.push(statsHour(fallBack + 25 * 3600000, 1))
+
+  const daily = processBlockStats([hours], zone)
+  t.is(daily[fallBack].blockCount, 25, 'the 25-hour local day keeps all of its hours')
+  t.is(daily[fallBack + 25 * 3600000].blockCount, 1)
+})
+
+test('processBlockStats - counts an hour once and drops unusable rows', (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const daily = processBlockStats([
+    [statsHour(day), { ts: day + 3600000, blockCount: 0 }, { ts: day + 7200000, blockCount: 3 }, null, { blockCount: 2 }],
+    [statsHour(day)],
+    { error: 'timeout' },
+    { currentPrice: 90000 }
+  ], 'UTC')
+
+  t.alike(daily, { [day]: { blockCount: 6, blockRewardSum: 600, blockTotalFeesSum: 60, blockSizeSum: 6000 } })
+  t.alike(processBlockStats([], 'UTC'), {})
+})
+
+test('processBlockStats - end is exclusive', (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const rows = [statsHour(day + 23 * 3600000), statsHour(day + 86400000)]
+
+  t.alike(Object.keys(processBlockStats([rows], 'UTC', day + 86400000)), [String(day)])
+  t.is(Object.keys(processBlockStats([rows], 'UTC', day + 86400000 + 1)).length, 2)
+})
+
+test('hourlyHistoryLimit - one row per hour of the range', (t) => {
+  t.is(hourlyHistoryLimit(0, 86400000 - 1), 25)
+  t.is(hourlyHistoryLimit(0, 31 * 86400000), 745)
 })
 
 test('processTransactions buckets f2pool payouts by mining_extra.mining_date when present', (t) => {

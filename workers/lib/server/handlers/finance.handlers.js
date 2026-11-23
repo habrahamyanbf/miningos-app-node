@@ -22,7 +22,9 @@ const {
   processTransactions,
   extractCurrentPrice,
   processBlockData,
+  processBlockStats,
   historyLimit,
+  hourlyHistoryLimit,
   priceDailyRevenue,
   pricingStatus
 } = require('./finance.utils')
@@ -818,61 +820,58 @@ function calculateCostSummary (log) {
 
 // ==================== Subsidy Fees ====================
 
+// Network-wide figures, averaged per block: every block mined in the period counts once, so
+// a week or a month is the reward of its average block rather than a sum of its days. The
+// periods are rolled up from block totals and divided last, which weights each day by the
+// blocks it actually had.
 async function getSubsidyFees (ctx, req) {
   const { start, end, timezone } = resolveStartEnd(ctx, req)
   const period = req.query.period || PERIOD_TYPES.DAILY
 
   const blockResults = await ctx.dataProxy.requestData(RPC_METHODS.GET_WRK_EXT_DATA, {
     type: WORKER_TYPES.MEMPOOL,
-    query: { key: 'HISTORICAL_BLOCKSIZES', start, end, limit: historyLimit(start, end) }
+    query: { key: 'HISTORICAL_BLOCK_STATS', start, end, limit: hourlyHistoryLimit(start, end) }
   })
 
-  const dailyBlocks = processBlockData(blockResults, timezone)
+  const dailyStats = processBlockStats(blockResults, timezone, end)
+  const dailyTotals = Object.keys(dailyStats)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((ts) => ({ ts, ...dailyStats[ts] }))
 
-  const log = []
-  for (const dayTs of Object.keys(dailyBlocks).sort()) {
-    const ts = Number(dayTs)
-    const block = dailyBlocks[dayTs]
-    log.push({
-      ts,
-      blockReward: block.blockReward,
-      blockTotalFees: block.blockTotalFees,
-      blockSize: block.blockSize
-    })
-  }
+  const totals = aggregateByPeriod(dailyTotals, period, [], { timezone })
+  const log = totals.map(({ blockRewardSum, blockTotalFeesSum, blockSizeSum, ...entry }) => ({
+    ...entry,
+    blockReward: blockAverage(blockRewardSum, entry.blockCount),
+    blockTotalFees: blockAverage(blockTotalFeesSum, entry.blockCount),
+    blockSize: blockAverage(blockSizeSum, entry.blockCount)
+  }))
 
-  const aggregated = aggregateByPeriod(log, period, [], { timezone })
-  const summary = calculateSubsidyFeesSummary(aggregated)
-
-  return { log: aggregated, summary }
+  return { log, summary: calculateSubsidyFeesSummary(totals) }
 }
 
-function calculateSubsidyFeesSummary (log) {
-  if (!log.length) {
-    return {
-      totalBlockReward: 0,
-      totalBlockTotalFees: 0,
-      totalBlockSize: 0,
-      avgBlockReward: null,
-      avgBlockTotalFees: null,
-      avgBlockSize: null
-    }
-  }
+function blockAverage (sum, blockCount) {
+  const avg = safeDiv(sum, blockCount)
+  return avg === null ? null : Math.round(avg)
+}
 
-  const totals = log.reduce((acc, entry) => {
-    acc.blockReward += entry.blockReward || 0
-    acc.blockTotalFees += entry.blockTotalFees || 0
-    acc.blockSize += entry.blockSize || 0
+function calculateSubsidyFeesSummary (totals) {
+  const sums = totals.reduce((acc, entry) => {
+    acc.blocks += entry.blockCount || 0
+    acc.blockReward += entry.blockRewardSum || 0
+    acc.blockTotalFees += entry.blockTotalFeesSum || 0
+    acc.blockSize += entry.blockSizeSum || 0
     return acc
-  }, { blockReward: 0, blockTotalFees: 0, blockSize: 0 })
+  }, { blocks: 0, blockReward: 0, blockTotalFees: 0, blockSize: 0 })
 
   return {
-    totalBlockReward: totals.blockReward,
-    totalBlockTotalFees: totals.blockTotalFees,
-    totalBlockSize: totals.blockSize,
-    avgBlockReward: safeDiv(totals.blockReward, log.length),
-    avgBlockTotalFees: safeDiv(totals.blockTotalFees, log.length),
-    avgBlockSize: safeDiv(totals.blockSize, log.length)
+    totalBlocks: sums.blocks,
+    totalBlockReward: sums.blockReward,
+    totalBlockTotalFees: sums.blockTotalFees,
+    totalBlockSize: sums.blockSize,
+    avgBlockReward: blockAverage(sums.blockReward, sums.blocks),
+    avgBlockTotalFees: blockAverage(sums.blockTotalFees, sums.blocks),
+    avgBlockSize: blockAverage(sums.blockSize, sums.blocks)
   }
 }
 
