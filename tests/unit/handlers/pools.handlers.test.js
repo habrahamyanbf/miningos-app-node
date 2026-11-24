@@ -132,6 +132,19 @@ test('flattenPoolStats - keeps missing stats null and a real 0 as 0', (t) => {
   t.is(idle.revenue24h, 0, 'a real 0 revenue is not replaced by the estimate')
 })
 
+test('flattenPoolStats - an unreadable stat (NaN) is null, not passed through', (t) => {
+  const results = [[{
+    ts: '1770000000000',
+    stats: [{ poolType: 'f2pool', username: 'u', hashrate: NaN, unsettled: NaN, balance: '0.5', revenue_24h: NaN, estimated_today_income: 0.2 }]
+  }]]
+  const [pool] = flattenPoolStats(results)
+
+  t.is(pool.hashrate, null)
+  t.is(pool.unsettled, null)
+  t.is(pool.balance, 0.5, 'a numeric string still counts')
+  t.is(pool.revenue24h, 0.2, 'an unreadable revenue_24h falls back to the estimate')
+})
+
 test('flattenPoolStats - falls back to the estimate only when revenue_24h is missing', (t) => {
   const results = [[{ ts: '1770000000000', stats: [{ poolType: 'f2pool', username: 'u', estimated_today_income: 0.2 }] }]]
   t.is(flattenPoolStats(results)[0].revenue24h, 0.2)

@@ -107,6 +107,16 @@ const safeDiv = (numerator, denominator) =>
     ? numerator / denominator
     : null
 
+// A reading as a finite number, or null when it is missing or unreadable (null, undefined,
+// blank, NaN, Infinity, a non-numeric string). A numeric string still counts. Unlike
+// `Number(x) || 0` it keeps a real 0 apart from a missing reading, and unlike `x ?? null`
+// it does not let NaN through.
+const toFiniteOrNull = (value) => {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 function deduplicateAlerts (alerts) {
   const seen = new Set()
   const result = []
@@ -242,6 +252,7 @@ module.exports = {
   localWeekStart,
   flattenRpcResults,
   safeDiv,
+  toFiniteOrNull,
   runParallel,
   deduplicateAlerts,
   matchesFilter,

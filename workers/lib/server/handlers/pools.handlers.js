@@ -11,7 +11,8 @@ const {
   parseJsonQueryParam,
   flattenRpcResults,
   localDayStart,
-  localWeekStart
+  localWeekStart,
+  toFiniteOrNull
 } = require('../../utils')
 const {
   resolveStartEnd,
@@ -67,16 +68,17 @@ function flattenPoolStats (results) {
           pool: stat.poolType,
           account: stat.username,
           status: 'active',
-          // A stat the pool did not report stays null, so clients can show it as missing
-          // rather than as a pool that has stopped; a real 0 is kept as 0 (`??`, not `||`).
-          hashrate: stat.hashrate ?? null,
-          hashrate1h: stat.hashrate_1h ?? null,
-          hashrate24h: stat.hashrate_24h ?? null,
-          workerCount: stat.worker_count ?? null,
-          activeWorkerCount: stat.active_workers_count ?? null,
-          balance: stat.balance ?? null,
-          unsettled: stat.unsettled ?? null,
-          revenue24h: stat.revenue_24h ?? stat.estimated_today_income ?? null,
+          // A stat the pool did not report, or reported unreadably (NaN, which the
+          // workers can produce and JSON would send as null anyway), stays null so clients
+          // can show it as missing rather than as a pool that has stopped; a real 0 is kept.
+          hashrate: toFiniteOrNull(stat.hashrate),
+          hashrate1h: toFiniteOrNull(stat.hashrate_1h),
+          hashrate24h: toFiniteOrNull(stat.hashrate_24h),
+          workerCount: toFiniteOrNull(stat.worker_count),
+          activeWorkerCount: toFiniteOrNull(stat.active_workers_count),
+          balance: toFiniteOrNull(stat.balance),
+          unsettled: toFiniteOrNull(stat.unsettled),
+          revenue24h: toFiniteOrNull(stat.revenue_24h) ?? toFiniteOrNull(stat.estimated_today_income),
           yearlyBalances: stat.yearlyBalances || [],
           lastUpdated: stat.timestamp || null
         })
