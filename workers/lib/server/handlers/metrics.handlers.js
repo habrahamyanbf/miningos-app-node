@@ -25,6 +25,7 @@ const {
   localDayStart,
   nextLocalDayStart,
   safeDiv,
+  toFiniteOrNull,
   flattenRpcResults
 } = require('../../utils')
 const {
@@ -703,18 +704,40 @@ function calculateHashrateSummary (log, withNominal = false) {
   return summary
 }
 
+// Sums the readable samples of each group across a set of hourly group maps. A missing
+// sample (null, NaN, ...) is skipped rather than counted as 0, and a group seen only with
+// missing samples is kept with a count of 0, so its average comes out null.
+function sumGroupSamples (groupMaps) {
+  const totals = {}
+  const counts = {}
+  for (const groups of groupMaps) {
+    if (!groups || typeof groups !== 'object') continue
+    for (const [name, val] of Object.entries(groups)) {
+      if (!(name in totals)) {
+        totals[name] = 0
+        counts[name] = 0
+      }
+      const v = toFiniteOrNull(val)
+      if (v === null) continue
+      totals[name] += v
+      counts[name] += 1
+    }
+  }
+  return { totals, counts }
+}
+
 // Each group averages the hours it reported in, as the store averaged its samples; an
-// hour without a group map (no data) is skipped rather than counted as zero.
+// hour without a group map (no data) is skipped rather than counted as zero, and so is a
+// missing sample inside one. (The shared addBucketValues/addBucketCounts also feed the
+// consumption rollups, so the grouped hashrate path keeps its own sums.)
 function rollupLocalGroupedHashrate (hourly, bucketing) {
   return groupLocalBuckets(hourly, bucketing).map(({ ts, timeRange, entries }) => {
-    let counts = null
-    let total = null
-    for (const { hashrateMhs } of entries) {
-      if (!hashrateMhs || typeof hashrateMhs !== 'object') continue
-      counts = addBucketCounts(counts, hashrateMhs)
-      total = addBucketValues(total, hashrateMhs)
-    }
-    return { ts, timeRange, hashrateMhs: total ? averageBucketValues(total, counts) : null }
+    const { totals, counts } = sumGroupSamples(entries.map(({ hashrateMhs }) => hashrateMhs))
+    const names = Object.keys(totals)
+    const hashrateMhs = names.length
+      ? Object.fromEntries(names.map((name) => [name, safeDiv(totals[name], counts[name])]))
+      : null
+    return { ts, timeRange, hashrateMhs }
   })
 }
 

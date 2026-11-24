@@ -7171,3 +7171,28 @@ test('calculateGroupedHashrateSummary - skips non-numeric samples', (t) => {
 
   t.is(summary.groupedBy['group-1'].avgHashrateMhs, 50, 'a numeric string still counts')
 })
+
+test('getHashrate 1d groupBy - a gap in the hourly rows stays a gap through the day rollup', async (t) => {
+  const DAY = Date.UTC(2026, 9, 1)
+  const HOUR = 60 * 60 * 1000
+  const hourRows = [
+    { A: 100, B: null },
+    { A: null, B: null },
+    { A: 200, B: null }
+  ].map((groups, i) => ({ ts: DAY + i * HOUR, hashrate_mhs_5m_type_group_sum_aggr: groups }))
+  const mockCtx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }] },
+    net_r0: { jRequest: async () => hourRows }
+  })
+
+  const res = await getHashrate(mockCtx, {
+    query: { start: DAY, end: DAY + 24 * HOUR - 1, interval: '1d', groupBy: 'miner' }
+  })
+
+  t.is(res.log.length, 1, 'one day row')
+  t.is(res.log[0].hashrateMhs.A, 150, 'the day averages only the hours A reported in')
+  t.is(res.log[0].hashrateMhs.B, null, 'a unit with no readings that day is null, not 0')
+  t.is(res.summary.groupedBy.A.avgHashrateMhs, 150)
+  t.is(res.summary.groupedBy.B.avgHashrateMhs, null)
+  t.is(res.summary.avgHashrateMhs, 150, 'the site average agrees with the groups')
+})
