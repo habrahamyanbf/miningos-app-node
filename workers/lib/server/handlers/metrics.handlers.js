@@ -744,39 +744,25 @@ function rollupLocalGroupedHashrate (hourly, bucketing) {
 function calculateGroupedHashrateSummary (log, groupBy) {
   if (!log.length) return { avgHashrateMhs: null }
 
-  const groupTotals = {}
-  const groupCounts = {}
+  // A missing sample is skipped, not counted as 0: it must neither drag the group's average
+  // down nor make a group with no readings look like a unit that was down. A group seen only
+  // with missing samples is still listed, with a null average.
+  const { totals, counts } = sumGroupSamples(log.map((entry) => entry.hashrateMhs))
 
-  for (const entry of log) {
-    const hashrate = entry.hashrateMhs
-    if (typeof hashrate === 'object' && hashrate !== null) {
-      for (const [name, val] of Object.entries(hashrate)) {
-        // A missing sample is skipped, not counted as 0: it must neither drag the group's
-        // average down nor make a group with no readings look like a unit that was down.
-        // `Number(null)` is 0, so null/blank are rejected before converting.
-        const v = val === null || val === undefined || val === '' ? NaN : Number(val)
-        if (!(name in groupTotals)) {
-          groupTotals[name] = 0
-          groupCounts[name] = 0
-        }
-        if (!Number.isFinite(v)) continue
-        groupTotals[name] += v
-        groupCounts[name] += 1
-      }
-    }
-  }
-
-  // A group seen only with missing samples is still listed, with a null average
-  // (safeDiv returns null for a zero count).
   const byGroup = {}
-  let siteTotal = 0
-  for (const [name, total] of Object.entries(groupTotals)) {
-    byGroup[name] = { avgHashrateMhs: safeDiv(total, groupCounts[name]) }
-    siteTotal += total
+  let siteAvg = null
+  for (const [name, total] of Object.entries(totals)) {
+    const avg = safeDiv(total, counts[name])
+    byGroup[name] = { avgHashrateMhs: avg }
+    if (avg !== null) siteAvg = (siteAvg ?? 0) + avg
   }
 
+  // The site average is the sum of the group averages, so the two sides of the response
+  // always agree (docs/API.md: the Miner Type view sums every listed group as the site
+  // total). Dividing the summed samples by log.length instead counted a gap as 0 again at
+  // site level. Null when no group has a reading.
   return {
-    avgHashrateMhs: safeDiv(siteTotal, log.length),
+    avgHashrateMhs: siteAvg,
     groupedBy: byGroup
   }
 }

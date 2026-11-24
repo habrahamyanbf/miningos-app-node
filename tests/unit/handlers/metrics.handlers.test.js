@@ -7160,6 +7160,29 @@ test('calculateGroupedHashrateSummary - a missing sample does not drag the group
   ])
 
   t.is(summary.groupedBy['group-1'].avgHashrateMhs, 150)
+  t.is(summary.avgHashrateMhs, 150, 'the site average follows the group, not the gap')
+})
+
+test('calculateGroupedHashrateSummary - the site average is the sum of the group averages', (t) => {
+  const summary = calculateGroupedHashrateSummary([
+    { ts: 1, hashrateMhs: { A: 100, B: 100 } },
+    { ts: 2, hashrateMhs: { A: null, B: 100 } },
+    { ts: 3, hashrateMhs: { A: 100, B: 100 } }
+  ])
+
+  t.is(summary.groupedBy.A.avgHashrateMhs, 100)
+  t.is(summary.groupedBy.B.avgHashrateMhs, 100)
+  t.is(summary.avgHashrateMhs, 200, 'both sides of the response agree')
+})
+
+test('calculateGroupedHashrateSummary - the site average is null when no group has a reading', (t) => {
+  const summary = calculateGroupedHashrateSummary([
+    { ts: 1, hashrateMhs: { A: null } },
+    { ts: 2, hashrateMhs: null }
+  ])
+
+  t.is(summary.groupedBy.A.avgHashrateMhs, null)
+  t.is(summary.avgHashrateMhs, null)
 })
 
 test('calculateGroupedHashrateSummary - skips non-numeric samples', (t) => {
