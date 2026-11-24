@@ -728,13 +728,23 @@ function calculateGroupedHashrateSummary (log, groupBy) {
     const hashrate = entry.hashrateMhs
     if (typeof hashrate === 'object' && hashrate !== null) {
       for (const [name, val] of Object.entries(hashrate)) {
-        const v = Number(val) || 0
-        groupTotals[name] = (groupTotals[name] || 0) + v
-        groupCounts[name] = (groupCounts[name] || 0) + 1
+        // A missing sample is skipped, not counted as 0: it must neither drag the group's
+        // average down nor make a group with no readings look like a unit that was down.
+        // `Number(null)` is 0, so null/blank are rejected before converting.
+        const v = val === null || val === undefined || val === '' ? NaN : Number(val)
+        if (!(name in groupTotals)) {
+          groupTotals[name] = 0
+          groupCounts[name] = 0
+        }
+        if (!Number.isFinite(v)) continue
+        groupTotals[name] += v
+        groupCounts[name] += 1
       }
     }
   }
 
+  // A group seen only with missing samples is still listed, with a null average
+  // (safeDiv returns null for a zero count).
   const byGroup = {}
   let siteTotal = 0
   for (const [name, total] of Object.entries(groupTotals)) {

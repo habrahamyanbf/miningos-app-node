@@ -6,6 +6,7 @@ const {
   monthlyHashesCache,
   dailyHashesCache,
   calculateHashrateSummary,
+  calculateGroupedHashrateSummary,
   getConsumption,
   rollupLocalConsumption,
   calculateConsumptionSummary,
@@ -7139,4 +7140,34 @@ test('getDowntime - phase=total and no phase serve the site series', async (t) =
     t.is(res.log[0].downtimeRate, 0.4)
     t.is(res.log[0].operationalIssuesRate, 0.4, 'the site keeps its split')
   }
+})
+
+test('calculateGroupedHashrateSummary - keeps a real 0 and reports a group with no readings as null', (t) => {
+  const summary = calculateGroupedHashrateSummary([
+    { ts: 1, hashrateMhs: { 'group-1': 0, 'group-2': null } },
+    { ts: 2, hashrateMhs: { 'group-1': 0, 'group-2': undefined } }
+  ])
+
+  t.is(summary.groupedBy['group-1'].avgHashrateMhs, 0, 'a unit that was down averages a real 0')
+  t.is(summary.groupedBy['group-2'].avgHashrateMhs, null, 'a unit with no readings is null, not 0')
+})
+
+test('calculateGroupedHashrateSummary - a missing sample does not drag the group average down', (t) => {
+  const summary = calculateGroupedHashrateSummary([
+    { ts: 1, hashrateMhs: { 'group-1': 100 } },
+    { ts: 2, hashrateMhs: { 'group-1': null } },
+    { ts: 3, hashrateMhs: { 'group-1': 200 } }
+  ])
+
+  t.is(summary.groupedBy['group-1'].avgHashrateMhs, 150)
+})
+
+test('calculateGroupedHashrateSummary - skips non-numeric samples', (t) => {
+  const summary = calculateGroupedHashrateSummary([
+    { ts: 1, hashrateMhs: { 'group-1': 'n/a' } },
+    { ts: 2, hashrateMhs: { 'group-1': '' } },
+    { ts: 3, hashrateMhs: { 'group-1': '50' } }
+  ])
+
+  t.is(summary.groupedBy['group-1'].avgHashrateMhs, 50, 'a numeric string still counts')
 })
