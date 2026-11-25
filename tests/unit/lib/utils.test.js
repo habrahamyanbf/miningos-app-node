@@ -472,7 +472,8 @@ test('toFiniteOrNull - keeps a real 0 apart from a missing or unreadable reading
   t.is(toFiniteOrNull(0), 0, 'a real 0 stays 0')
   t.is(toFiniteOrNull(12.5), 12.5)
   t.is(toFiniteOrNull('7'), 7, 'a numeric string still counts')
-  for (const missing of [null, undefined, '', NaN, Infinity, -Infinity, 'n/a']) {
+  t.is(toFiniteOrNull(' 7 '), 7, 'surrounding whitespace is fine')
+  for (const missing of [null, undefined, '', '   ', NaN, Infinity, -Infinity, 'n/a', false, true, [], {}, [5]]) {
     t.is(toFiniteOrNull(missing), null, `${String(missing)} is missing`)
   }
 })

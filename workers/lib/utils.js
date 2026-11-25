@@ -107,12 +107,15 @@ const safeDiv = (numerator, denominator) =>
     ? numerator / denominator
     : null
 
-// A reading as a finite number, or null when it is missing or unreadable (null, undefined,
-// blank, NaN, Infinity, a non-numeric string). A numeric string still counts. Unlike
+// A reading as a finite number, or null when it is missing or unreadable. Only a finite
+// number or a numeric string counts; null, undefined, a blank or whitespace-only string,
+// NaN, Infinity and any other type (booleans, arrays, objects) are null, since
+// Number(false), Number([]) and Number('  ') would all read as a real 0. Unlike
 // `Number(x) || 0` it keeps a real 0 apart from a missing reading, and unlike `x ?? null`
 // it does not let NaN through.
 const toFiniteOrNull = (value) => {
-  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string' || value.trim() === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
