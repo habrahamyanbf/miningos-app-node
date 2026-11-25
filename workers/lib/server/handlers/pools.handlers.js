@@ -89,13 +89,19 @@ function flattenPoolStats (results) {
   return pools
 }
 
+// Each total adds the pools that reported that stat. When no pool reported it, the total
+// is null rather than 0, so a site with no readings does not read as a dead site.
 function calculatePoolsSummary (pools) {
+  const addStat = (total, value) => {
+    const v = toFiniteOrNull(value)
+    return v === null ? total : (total ?? 0) + v
+  }
   const totals = pools.reduce((acc, pool) => {
-    acc.totalHashrate += pool.hashrate || 0
-    acc.totalWorkers += pool.workerCount || pool.worker_count || 0
-    acc.totalBalance += pool.balance || 0
+    acc.totalHashrate = addStat(acc.totalHashrate, pool.hashrate)
+    acc.totalWorkers = addStat(acc.totalWorkers, pool.workerCount ?? pool.worker_count)
+    acc.totalBalance = addStat(acc.totalBalance, pool.balance)
     return acc
-  }, { totalHashrate: 0, totalWorkers: 0, totalBalance: 0 })
+  }, { totalHashrate: null, totalWorkers: null, totalBalance: null })
 
   return {
     poolCount: pools.length,

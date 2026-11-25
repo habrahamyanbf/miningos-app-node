@@ -190,8 +190,19 @@ test('calculatePoolsSummary - calculates totals', (t) => {
 test('calculatePoolsSummary - handles empty pools', (t) => {
   const summary = calculatePoolsSummary([])
   t.is(summary.poolCount, 0, 'should be zero')
-  t.is(summary.totalHashrate, 0, 'should be zero')
+  t.is(summary.totalHashrate, null, 'nothing reported, so no total rather than a 0')
   t.pass()
+})
+
+test('calculatePoolsSummary - a total is null when no pool reported that stat', (t) => {
+  const summary = calculatePoolsSummary([
+    { hashrate: null, workerCount: null, balance: 0 },
+    { hashrate: null, workerCount: null, balance: null }
+  ])
+  t.is(summary.poolCount, 2)
+  t.is(summary.totalHashrate, null, 'no pool reported hashrate: not a dead site')
+  t.is(summary.totalWorkers, null)
+  t.is(summary.totalBalance, 0, 'a real 0 balance is still a total')
 })
 
 test('getPoolBalanceHistory - happy path', async (t) => {
