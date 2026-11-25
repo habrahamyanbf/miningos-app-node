@@ -1385,9 +1385,18 @@ test('getSubsidyFees - the same hour from several orks is counted once', async (
   t.is(result.summary.totalBlockReward, 6 * 313000000)
 })
 
-test('getSubsidyFees - a worker without block stats yields an empty log', async (t) => {
+const captureWarnings = (t) => {
+  const original = console.warn
+  const seen = []
+  console.warn = (...args) => { seen.push(args) }
+  t.teardown(() => { console.warn = original })
+  return seen
+}
+
+test('getSubsidyFees - a worker without block stats yields an empty log and says so', async (t) => {
   const day = Date.UTC(2026, 10, 2)
-  const ctx = subsidyFeesCtx({ currentPrice: 90000, blockHeight: 977000 })
+  const ctx = subsidyFeesCtx([{ currentPrice: 90000, blockHeight: 977000 }])
+  const warnings = captureWarnings(t)
 
   const result = await getSubsidyFees(ctx, {
     query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
@@ -1396,6 +1405,42 @@ test('getSubsidyFees - a worker without block stats yields an empty log', async 
   t.alike(result.log, [])
   t.is(result.summary.totalBlocks, 0)
   t.is(result.summary.avgBlockReward, null)
+  t.is(warnings.length, 1)
+  t.is(warnings[0][1], 'WARN_SUBSIDY_FEES_NO_BLOCK_STATS')
+})
+
+test('getSubsidyFees - a range with no blocks stays quiet', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const warnings = captureWarnings(t)
+
+  const empty = await getSubsidyFees(subsidyFeesCtx([]), {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
+  })
+  const filled = await getSubsidyFees(subsidyFeesCtx([blockStatsHour(day, 6, 313000000, 500000)]), {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
+  })
+
+  t.alike(empty.log, [])
+  t.is(filled.log.length, 1)
+  t.is(warnings.length, 0)
+})
+
+test('getSubsidyFees - orks at different points of the backfill give the fuller hour', async (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  let call = 0
+  const ctx = withDataProxy({
+    conf: { orks: [{ rpcPublicKey: 'key1' }, { rpcPublicKey: 'key2' }] },
+    net_r0: {
+      jRequest: async () => [blockStatsHour(day, call++ === 0 ? 5 : 6, 313000000, 500000)]
+    }
+  })
+
+  const result = await getSubsidyFees(ctx, {
+    query: { start: day, end: day + 24 * HOUR_MS - 1, timezone: 'UTC' }
+  })
+
+  t.is(result.log[0].blockCount, 6)
+  t.is(result.summary.totalBlocks, 6)
 })
 
 test('getSubsidyFees - missing start throws', async (t) => {

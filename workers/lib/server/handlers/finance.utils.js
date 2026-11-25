@@ -354,29 +354,49 @@ function isBlockStatsRow (row) {
     BLOCK_STATS_SUM_KEYS.every((key) => Number.isFinite(row[key]))
 }
 
-// Rolls the mempool worker's UTC-hourly block totals up into the site's local days. The
-// hours are network-wide, so every ork answers with the same rows: an hour is counted once
-// however many orks returned it. `end` is exclusive - an hour starting exactly at `end`
-// belongs to the next day, and would otherwise open a bucket holding that single hour.
-function processBlockStats (results, timezone, end = Infinity) {
-  const daily = {}
-  const seen = new Set()
+function blockStatsEntries (results) {
+  const entries = []
   for (const res of results) {
     if (!res || res.error) continue
     const data = Array.isArray(res) ? res : (res.data || res.result || [])
     if (!Array.isArray(data)) continue
     for (const entry of data) {
-      const rows = Array.isArray(entry?.data) ? entry.data : [entry]
-      for (const row of rows) {
-        if (!isBlockStatsRow(row) || row.ts >= end || seen.has(row.ts)) continue
-        seen.add(row.ts)
-        const ts = localDayStart(row.ts, timezone)
-        if (!daily[ts]) daily[ts] = { blockCount: 0, blockRewardSum: 0, blockTotalFeesSum: 0, blockSizeSum: 0 }
-        for (const key of BLOCK_STATS_SUM_KEYS) daily[ts][key] += row[key]
-      }
+      if (Array.isArray(entry?.data)) entries.push(...entry.data)
+      else entries.push(entry)
     }
   }
+  return entries
+}
+
+// Rolls the mempool worker's UTC-hourly block totals up into the site's local days. The
+// hours are network-wide, so an hour is counted once however many orks returned it. A
+// worker's row is a running total that only grows - one still backfilling, or waiting on a
+// block its upstream could not serve, holds fewer blocks for the hour - so of several
+// answers for an hour the one with the most blocks is the complete one. `end` is exclusive -
+// an hour starting exactly at `end` belongs to the next day, and would otherwise open a
+// bucket holding that single hour.
+function processBlockStats (results, timezone, end = Infinity) {
+  const hours = new Map()
+  for (const row of blockStatsEntries(results)) {
+    if (!isBlockStatsRow(row) || row.ts >= end) continue
+    const best = hours.get(row.ts)
+    if (!best || row.blockCount > best.blockCount) hours.set(row.ts, row)
+  }
+
+  const daily = {}
+  for (const row of hours.values()) {
+    const ts = localDayStart(row.ts, timezone)
+    if (!daily[ts]) daily[ts] = { blockCount: 0, blockRewardSum: 0, blockTotalFeesSum: 0, blockSizeSum: 0 }
+    for (const key of BLOCK_STATS_SUM_KEYS) daily[ts][key] += row[key]
+  }
   return daily
+}
+
+// True when a worker answered the block-stats query with something other than hourly rows.
+// A worker that predates the hourly store does not know the key and answers with its live
+// snapshot instead, where an upgraded one with nothing in range answers with no rows at all.
+function hasForeignBlockStats (results) {
+  return blockStatsEntries(results).some((entry) => !isBlockStatsRow(entry))
 }
 
 module.exports = {
@@ -389,6 +409,7 @@ module.exports = {
   extractCurrentPrice,
   processBlockData,
   processBlockStats,
+  hasForeignBlockStats,
   historyLimit,
   hourlyHistoryLimit,
   priceBucket,

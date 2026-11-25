@@ -23,6 +23,7 @@ const {
   extractCurrentPrice,
   processBlockData,
   processBlockStats,
+  hasForeignBlockStats,
   historyLimit,
   hourlyHistoryLimit,
   priceDailyRevenue,
@@ -834,6 +835,13 @@ async function getSubsidyFees (ctx, req) {
   })
 
   const dailyStats = processBlockStats(blockResults, timezone, end)
+  if (!Object.keys(dailyStats).length && hasForeignBlockStats(blockResults)) {
+    console.warn(
+      new Date().toISOString(),
+      'WARN_SUBSIDY_FEES_NO_BLOCK_STATS',
+      'mempool worker answered without hourly block stats - is it running a version that has them?'
+    )
+  }
   const dailyTotals = Object.keys(dailyStats)
     .map(Number)
     .sort((a, b) => a - b)

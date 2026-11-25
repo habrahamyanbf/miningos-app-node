@@ -11,6 +11,7 @@ const {
   extractCurrentPrice,
   processBlockData,
   processBlockStats,
+  hasForeignBlockStats,
   hourlyHistoryLimit
 } = require('../../../workers/lib/server/handlers/finance.utils')
 
@@ -459,6 +460,25 @@ test('processBlockStats - counts an hour once and drops unusable rows', (t) => {
 
   t.alike(daily, { [day]: { blockCount: 6, blockRewardSum: 600, blockTotalFeesSum: 60, blockSizeSum: 6000 } })
   t.alike(processBlockStats([], 'UTC'), {})
+})
+
+test('processBlockStats - keeps the most complete answer for an hour', (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  const behind = [statsHour(day, 5), statsHour(day + 3600000, 6)]
+  const ahead = [statsHour(day, 6), statsHour(day + 3600000, 6), statsHour(day + 7200000, 4)]
+  const expected = { [day]: { blockCount: 16, blockRewardSum: 1600, blockTotalFeesSum: 160, blockSizeSum: 16000 } }
+
+  t.alike(processBlockStats([behind, ahead], 'UTC'), expected)
+  t.alike(processBlockStats([ahead, behind], 'UTC'), expected, 'whichever ork answers first')
+})
+
+test('hasForeignBlockStats - tells an older worker from an empty range', (t) => {
+  const day = Date.UTC(2026, 10, 2)
+  t.ok(hasForeignBlockStats([[{ currentPrice: 90000, blockHeight: 977000 }]]), 'live snapshot instead of rows')
+  t.absent(hasForeignBlockStats([[]]), 'upgraded worker, nothing in range')
+  t.absent(hasForeignBlockStats([]))
+  t.absent(hasForeignBlockStats([{ error: 'timeout' }]))
+  t.absent(hasForeignBlockStats([[statsHour(day)]]))
 })
 
 test('processBlockStats - end is exclusive', (t) => {
